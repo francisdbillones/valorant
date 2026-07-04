@@ -1,12 +1,11 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
 import json
 import os
 import time
 import re
 from typing import List
-
-app = FastAPI(title="Valorant Scraper Coordinator")
 
 # Configuration
 INPUT_FILE = "all_recorded_games.json"
@@ -28,8 +27,7 @@ def extract_match_id(url_path):
         return url_path
     return None
 
-@app.on_event("startup")
-def startup():
+def load_all_data():
     global all_match_ids, completed_ids, match_details
     
     # 1. Load input matches
@@ -62,6 +60,14 @@ def startup():
             print(f"Error loading '{OUTPUT_FILE}': {e}")
             
     print(f"Total match IDs to process: {len(all_match_ids)}. Pending: {len(all_match_ids) - len(completed_ids)}")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Perform startup load
+    load_all_data()
+    yield
+
+app = FastAPI(title="Valorant Scraper Coordinator", lifespan=lifespan)
 
 def save_progress():
     try:
