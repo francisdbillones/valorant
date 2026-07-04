@@ -27,6 +27,12 @@ def parse_args():
         default=0.5, 
         help="Delay in seconds between requests (default: 0.5)"
     )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=50,
+        help="Number of match IDs to request in each chunk (default: 50)"
+    )
     return parser.parse_args()
 
 def fetch_match(client, api_url, match_id):
@@ -68,8 +74,11 @@ def main():
     while True:
         try:
             # 1. Request a chunk from the coordinator
-            print(f"\nRequesting chunk from coordinator '{get_chunk_url}'...")
-            r = coordinator_client.get(get_chunk_url, params={"worker_id": worker_id})
+            print(f"\nRequesting chunk (size={args.chunk_size}) from coordinator...")
+            r = coordinator_client.get(
+                get_chunk_url, 
+                params={"worker_id": worker_id, "chunk_size": args.chunk_size}
+            )
             if r.status_code != 200:
                 print(f"Error: Coordinator returned status {r.status_code}. Retrying in 10s...")
                 time.sleep(10)
