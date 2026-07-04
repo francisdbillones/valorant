@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from contextlib import asynccontextmanager
 import json
 import os
-import shutil
+import sqlite3
 import time
 import re
 from typing import List
@@ -11,7 +11,7 @@ from typing import List
 # Resolve paths relative to this script's directory
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INPUT_FILE = os.path.join(BASE_DIR, "all_recorded_games.json")
-OUTPUT_FILE = os.path.join(BASE_DIR, "all_match_details.json")
+DB_FILE = os.path.join(BASE_DIR, "all_match_details.db")
 
 DEFAULT_CHUNK_SIZE = 50
 LEASE_TIMEOUT = 600  # 10 minutes (reclaim if worker dies)
@@ -20,7 +20,6 @@ LEASE_TIMEOUT = 600  # 10 minutes (reclaim if worker dies)
 all_match_ids = []
 completed_ids = set()
 leased_ids = {}      # match_id -> lease_time
-match_details = {}   # match_id -> data
 
 def extract_match_id(url_path):
     match = re.search(r"/(\d+)/", url_path)
@@ -30,8 +29,20 @@ def extract_match_id(url_path):
         return url_path
     return None
 
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS matches (
+            match_id TEXT PRIMARY KEY,
+            data TEXT
+        )
+    """)
+    conn.commit()
+    return conn
+
 def load_all_data():
-    global all_match_ids, completed_ids, match_details
+    global all_match_ids, completed_ids
     
     # 1. Load input matches
     if not os.path.exists(INPUT_FILE):
@@ -48,20 +59,16 @@ def load_all_data():
             seen.add(mid)
             all_match_ids.append(mid)
             
-    # 2. Load completed matches to resume progress
-    if os.path.exists(OUTPUT_FILE):
-        try:
-            with open(OUTPUT_FILE, "r") as f:
-                existing_data = json.load(f)
-            for item in existing_data:
-                mid = item.get("match_id")
-                if mid:
-                    completed_ids.add(str(mid))
-                    match_details[str(mid)] = item
-            print(f"Loaded {len(completed_ids)} completed matches from '{OUTPUT_FILE}'.")
-        except Exception as e:
-            print(f"Error loading '{OUTPUT_FILE}': {e}")
+    # 2. Init SQLite and load completed match IDs
+    conn = init_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT match_id FROM matches")
+    rows = cursor.fetchall()
+    for row in rows:
+        completed_ids.add(str(row[0]))
+    conn.close()
             
+    print(f"Loaded {len(completed_ids)} completed matches from database '{DB_FILE}'.")
     print(f"Total match IDs to process: {len(all_match_ids)}. Pending: {len(all_match_ids) - len(completed_ids)}")
 
 @asynccontextmanager
@@ -72,14 +79,26 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Valorant Scraper Coordinator", lifespan=lifespan)
 
-def save_progress():
+def save_matches_to_db(matches: List[dict]):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
     try:
-        temp_file = OUTPUT_FILE + ".tmp"
-        with open(temp_file, "w") as f:
-            json.dump(list(match_details.values()), f, indent=2)
-        shutil.move(temp_file, OUTPUT_FILE)
+        # Bulk insert/replace matching data
+        data_tuples = []
+        for match in matches:
+            mid = str(match.get("match_id"))
+            if mid:
+                data_tuples.append((mid, json.dumps(match)))
+        
+        if data_tuples:
+            cursor.executemany("INSERT OR REPLACE INTO matches (match_id, data) VALUES (?, ?)", data_tuples)
+            conn.commit()
     except Exception as e:
-        print(f"Error saving output file: {e}")
+        conn.rollback()
+        print(f"Database error saving progress: {e}")
+        raise
+    finally:
+        conn.close()
 
 @app.get("/get_chunk")
 def get_chunk(
@@ -114,23 +133,26 @@ class SubmitChunkPayload(BaseModel):
 
 @app.post("/submit_chunk")
 def submit_chunk(payload: SubmitChunkPayload):
-    global leased_ids, completed_ids, match_details
+    global leased_ids, completed_ids
     
-    count = 0
-    for match in payload.results:
-        mid = str(match.get("match_id"))
-        if mid:
-            match_details[mid] = match
-            completed_ids.add(mid)
-            # Remove from leased dict if present
-            leased_ids.pop(mid, None)
-            count += 1
-            
-    if count > 0:
-        save_progress()
-        print(f"Worker '{payload.worker_id}' successfully submitted {count} matches.")
+    try:
+        # Save directly to SQLite
+        save_matches_to_db(payload.results)
         
-    return {"status": "success", "processed": count}
+        count = 0
+        for match in payload.results:
+            mid = str(match.get("match_id"))
+            if mid:
+                completed_ids.add(mid)
+                leased_ids.pop(mid, None)
+                count += 1
+                
+        if count > 0:
+            print(f"Worker '{payload.worker_id}' successfully submitted {count} matches to SQLite.")
+            
+        return {"status": "success", "processed": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database write failed: {str(e)}")
 
 @app.get("/status")
 def get_status():
@@ -145,3 +167,26 @@ def get_status():
         "pending": pending,
         "percentage_completed": f"{(completed / total * 100):.2f}%" if total > 0 else "0%"
     }
+
+@app.get("/export")
+def export_to_json(filepath: str = "all_match_details.json"):
+    """Export SQLite database to a single JSON list file."""
+    if not os.path.isabs(filepath):
+        filepath = os.path.join(BASE_DIR, filepath)
+        
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT data FROM matches")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    matches_list = []
+    for row in rows:
+        matches_list.append(json.loads(row[0]))
+        
+    try:
+        with open(filepath, "w") as f:
+            json.dump(matches_list, f, indent=2)
+        return {"status": "success", "exported_records": len(matches_list), "file": filepath}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write JSON: {str(e)}")
