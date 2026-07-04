@@ -7,9 +7,11 @@ import time
 import re
 from typing import List
 
-# Configuration
-INPUT_FILE = "all_recorded_games.json"
-OUTPUT_FILE = "all_match_details.json"
+# Resolve paths relative to this script's directory
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+INPUT_FILE = os.path.join(BASE_DIR, "all_recorded_games.json")
+OUTPUT_FILE = os.path.join(BASE_DIR, "all_match_details.json")
+
 CHUNK_SIZE = 50
 LEASE_TIMEOUT = 600  # 10 minutes (reclaim if worker dies)
 
@@ -32,7 +34,7 @@ def load_all_data():
     
     # 1. Load input matches
     if not os.path.exists(INPUT_FILE):
-        print(f"Error: Input file '{INPUT_FILE}' not found in the current working directory.")
+        print(f"Error: Input file '{INPUT_FILE}' not found. Expected at: {INPUT_FILE}")
         return
         
     with open(INPUT_FILE, "r") as f:
