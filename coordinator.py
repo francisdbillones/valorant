@@ -1,8 +1,9 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 import json
 import os
+import shutil
 import time
 import re
 from typing import List
@@ -12,7 +13,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INPUT_FILE = os.path.join(BASE_DIR, "all_recorded_games.json")
 OUTPUT_FILE = os.path.join(BASE_DIR, "all_match_details.json")
 
-CHUNK_SIZE = 50
+DEFAULT_CHUNK_SIZE = 50
 LEASE_TIMEOUT = 600  # 10 minutes (reclaim if worker dies)
 
 # State
@@ -76,12 +77,15 @@ def save_progress():
         temp_file = OUTPUT_FILE + ".tmp"
         with open(temp_file, "w") as f:
             json.dump(list(match_details.values()), f, indent=2)
-        os.replace(temp_file, OUTPUT_FILE)
+        shutil.move(temp_file, OUTPUT_FILE)
     except Exception as e:
         print(f"Error saving output file: {e}")
 
 @app.get("/get_chunk")
-def get_chunk(worker_id: str = "unknown"):
+def get_chunk(
+    worker_id: str = "unknown", 
+    chunk_size: int = Query(DEFAULT_CHUNK_SIZE, description="Number of match IDs to return in the chunk", ge=1, le=500)
+):
     global leased_ids
     now = time.time()
     
@@ -97,7 +101,7 @@ def get_chunk(worker_id: str = "unknown"):
         if mid not in completed_ids and mid not in leased_ids:
             chunk.append(mid)
             leased_ids[mid] = now
-            if len(chunk) >= CHUNK_SIZE:
+            if len(chunk) >= chunk_size:
                 break
                 
     if chunk:

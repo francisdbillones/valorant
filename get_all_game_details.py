@@ -1,6 +1,7 @@
 import httpx
 import json
 import os
+import shutil
 import re
 import time
 import argparse
@@ -100,7 +101,8 @@ def save_details(filepath, details_dict):
         temp_file = filepath + ".tmp"
         with open(temp_file, "w") as f:
             json.dump(output_list, f, indent=2)
-        os.replace(temp_file, filepath)
+        # Use shutil.move to handle potential OverlayFS or cross-device mounts on VPS
+        shutil.move(temp_file, filepath)
     except Exception as e:
         print(f"\nError saving progress to '{filepath}': {e}")
 
