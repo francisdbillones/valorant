@@ -70,10 +70,10 @@ def enrich_matches(matches: pd.DataFrame) -> pd.DataFrame:
     )
 
 def get_working_matches(matches: pd.DataFrame) -> pd.DataFrame:
-    """Return final T1/T2 matches only."""
+    """Return final T1/T2/GC matches only."""
     return matches[
         (matches['status'] == 'final') &
-        (matches['tier'].isin(['tier1', 'tier2']))
+        (matches['tier'].isin(['tier1', 'tier2', 'game_changers']))
     ].copy()
 
 # ── Map helpers ────────────────────────────────────────────────────────────────
